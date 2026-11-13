@@ -18,6 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PANEL_URL = os.environ.get("PANEL_URL", "").rstrip("/")
 PANEL_USER = os.environ.get("PANEL_USER", "")
 PANEL_PASS = os.environ.get("PANEL_PASS", "")
+PANEL_TOKEN = os.environ.get("PANEL_TOKEN", "")  # API Token ثنایی (پیشنهادی)
 SUDO_USER = os.environ.get("SUDO_USER", "owner")
 SUDO_PASS = os.environ.get("SUDO_PASS", "")
 SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -98,18 +99,39 @@ class Panel:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=20, verify=False)
         self.lock = asyncio.Lock()
-        self.logged = False
+        self.logged = bool(PANEL_TOKEN)
+        self.csrf = ""
+
+    def headers(self):
+        if PANEL_TOKEN:
+            return {"Authorization": "Bearer " + PANEL_TOKEN}
+        return {"X-CSRF-Token": self.csrf} if self.csrf else {}
+
+    async def fetch_csrf(self):
+        try:
+            r = await self.client.get(PANEL_URL + "/csrf-token")
+            j = r.json()
+            self.csrf = (j.get("obj") or "") if j.get("success") else ""
+        except Exception:
+            self.csrf = ""
 
     async def login(self):
+        if PANEL_TOKEN:
+            self.logged = True
+            return
         async with self.lock:
             try:
+                await self.fetch_csrf()
                 r = await self.client.post(PANEL_URL + "/login",
-                                           data={"username": PANEL_USER, "password": PANEL_PASS})
+                                           data={"username": PANEL_USER, "password": PANEL_PASS},
+                                           headers=self.headers())
                 ok = r.json().get("success")
+                if ok:
+                    await self.fetch_csrf()
             except Exception:
                 ok = False
             if not ok:
-                raise HTTPException(502, "ورود به پنل ثنایی ناموفق بود؛ آدرس/یوزر/پسورد را بررسی کنید")
+                raise HTTPException(502, "ورود به پنل ثنایی ناموفق بود؛ آدرس/یوزر/پسورد یا PANEL_TOKEN را بررسی کنید")
             self.logged = True
 
     async def call(self, method, path, **kw):
@@ -117,7 +139,7 @@ class Panel:
             await self.login()
         for attempt in range(2):
             try:
-                r = await self.client.request(method, PANEL_URL + path, **kw)
+                r = await self.client.request(method, PANEL_URL + path, headers=self.headers(), **kw)
             except httpx.HTTPError:
                 raise HTTPException(502, "اتصال به پنل ثنایی برقرار نشد")
             data = None

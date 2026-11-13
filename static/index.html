@@ -1,1 +1,188 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>پنل نمایندگان</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--tx:#1b1f24;--mut:#6b7280;--bd:#e3e6ea;--pr:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+@media(prefers-color-scheme:dark){:root{--bg:#111418;--card:#1a1f26;--tx:#e8eaed;--mut:#9aa3ad;--bd:#2b323b;--pr:#3b82f6}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 Tahoma,system-ui,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:10px 0}
+h2,h3{margin:0 0 8px}
+input,select{width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit;margin-top:4px}
+label{display:block;margin:8px 0;font-size:13px;color:var(--mut)}
+button{padding:8px 12px;border:0;border-radius:8px;background:var(--pr);color:#fff;font:inherit;cursor:pointer}
+button.ghost{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+button.bad{background:var(--bad)}button.sm{padding:5px 9px;font-size:13px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.sp{justify-content:space-between}
+.mut{color:var(--mut);font-size:13px}
+.bar{height:6px;background:var(--bd);border-radius:6px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--pr)}
+.b{font-size:12px;padding:1px 8px;border-radius:10px;border:1px solid var(--bd)}
+.active{color:var(--ok)}.limited,.expired{color:var(--warn)}.disabled{color:var(--bad)}
+dialog{border:1px solid var(--bd);border-radius:12px;background:var(--card);color:var(--tx);width:min(92vw,420px)}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="login" class="card hide">
+  <h2>ورود</h2>
+  <label>یوزرنیم<input id="lu" autocomplete="username"></label>
+  <label>پسورد<input id="lp" type="password" autocomplete="current-password"></label>
+  <button id="lb">ورود</button>
+  <div id="le" class="mut" style="color:var(--bad)"></div>
+</div>
+<div id="app" class="hide">
+  <div class="card row sp"><div><b id="who"></b><div class="mut" id="info"></div></div><button class="ghost sm" id="out">خروج</button></div>
+  <div class="row" id="tabs"></div>
+  <div id="main"></div>
+</div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const GB=1024**3;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtB=b=>b>=GB?(b/GB).toFixed(2)+' GB':(b/1048576).toFixed(1)+' MB';
+const fmtD=ms=>ms>0?new Date(ms).toLocaleDateString('fa-IR'):(ms<0?'پس از اولین اتصال':'نامحدود');
+const ST={active:'فعال',limited:'اتمام حجم',expired:'منقضی',disabled:'غیرفعال'};
+let me=null,tab='users',inbounds=[];
 
+async function api(path,method='GET',body){
+  const r=await fetch('/api'+path,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
+  let j=null;try{j=await r.json()}catch(e){}
+  if(!r.ok){
+    if(r.status===401&&path!=='/login')showLogin();
+    throw new Error(j&&typeof j.detail==='string'?j.detail:'ورودی نامعتبر یا خطای سرور');
+  }
+  return j;
+}
+function toast(m){alert(m)}
+function form(title,fields){
+  return new Promise(res=>{
+    const d=document.createElement('dialog');
+    d.innerHTML=`<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f=>`<label>${esc(f.label)}${f.type==='select'
+      ?`<select name="${f.name}">${f.options.map(o=>`<option value="${esc(o.v)}">${esc(o.t)}</option>`).join('')}</select>`
+      :`<input name="${f.name}" type="${f.type||'text'}" value="${esc(f.value??'')}" autocomplete="off">`}</label>`).join('')}
+      <div class="row"><button value="ok">تایید</button><button value="cancel" class="ghost" formnovalidate>انصراف</button></div></form>`;
+    document.body.appendChild(d);
+    d.addEventListener('close',()=>{let o=null;if(d.returnValue==='ok'){o={};new FormData(d.querySelector('form')).forEach((v,k)=>o[k]=v)}d.remove();res(o)});
+    d.showModal();
+  });
+}
+const num=v=>v===''||v==null?undefined:Number(v);
+
+function showLogin(){$('#app').classList.add('hide');$('#login').classList.remove('hide')}
+$('#lb').onclick=async()=>{
+  try{await api('/login','POST',{username:$('#lu').value,password:$('#lp').value});$('#le').textContent='';start()}
+  catch(e){$('#le').textContent=e.message}
+};
+$('#lp').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lb').click()});
+$('#out').onclick=async()=>{await api('/logout','POST');showLogin()};
+
+async function start(){
+  try{me=await api('/me')}catch(e){return showLogin()}
+  $('#login').classList.add('hide');$('#app').classList.remove('hide');
+  $('#who').textContent=me.username+(me.role==='sudo'?' (مالک)':'');
+  if(me.role==='admin'){
+    const inf=[`کاربر: ${me.count}${me.max_users?' / '+me.max_users:''}`,`حجم تخصیص‌یافته: ${me.allocated.toFixed(1)}${me.max_gb?' / '+me.max_gb+' GB':' GB'}`,`انقضا: ${me.expire_ts?new Date(me.expire_ts*1000).toLocaleDateString('fa-IR'):'نامحدود'}`];
+    if(!me.active)inf.push('⚠ حساب غیرفعال/منقضی');
+    $('#info').textContent=inf.join(' | ');
+  }else $('#info').textContent='';
+  try{inbounds=await api('/inbounds')}catch(e){inbounds=[]}
+  $('#tabs').innerHTML=me.role==='sudo'?'<button class="ghost sm" data-t="admins">ادمین‌ها</button><button class="ghost sm" data-t="users">همه کاربران</button>':'';
+  tab=me.role==='sudo'?'admins':'users';
+  render();
+}
+$('#tabs').onclick=e=>{const t=e.target.dataset.t;if(t){tab=t;render()}};
+function render(){tab==='admins'?renderAdmins():renderUsers()}
+
+async function renderUsers(){
+  let list;try{list=await api('/users')}catch(e){return toast(e.message)}
+  $('#main').innerHTML=(me.role==='admin'?'<div class="card"><button id="nu">+ کاربر جدید</button></div>':'')+
+  (list.length?list.map(u=>{
+    const pct=u.gb>0?Math.min(100,u.used/(u.gb*GB)*100):0;
+    return `<div class="card" data-id="${u.id}">
+      <div class="row sp"><b>${esc(u.name)}</b><span class="b ${u.status}">${ST[u.status]}</span></div>
+      ${me.role==='sudo'?`<div class="mut">ادمین: ${esc(u.admin)}</div>`:''}
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="mut">${fmtB(u.used)} از ${u.gb>0?u.gb+' GB':'نامحدود'} | انقضا: ${fmtD(u.expiry)}</div>
+      <div class="row" style="margin-top:8px">
+        ${u.sub?'<button class="sm" data-a="copy">لینک</button>':''}
+        <button class="sm ghost" data-a="edit">ویرایش</button>
+        <button class="sm ghost" data-a="reset">ریست ترافیک</button>
+        <button class="sm ghost" data-a="toggle">${u.enabled?'غیرفعال‌سازی':'فعال‌سازی'}</button>
+        <button class="sm bad" data-a="del">حذف</button></div></div>`}).join('')
+   :'<div class="card mut">کاربری وجود ندارد.</div>');
+  window._users=Object.fromEntries(list.map(u=>[u.id,u]));
+  const nu=$('#nu');if(nu)nu.onclick=newUser;
+}
+$('#main').onclick=async e=>{
+  const act=e.target.dataset.a;if(!act)return;
+  const card=e.target.closest('[data-id]');const id=card&&card.dataset.id;
+  try{
+    if(card.dataset.kind==='admin')return adminAct(act,id);
+    const u=window._users[id];
+    if(act==='copy'){try{await navigator.clipboard.writeText(u.sub);toast('کپی شد')}catch(_){prompt('لینک اشتراک',u.sub)}return}
+    if(act==='edit'){const f=await form('ویرایش '+u.name,[{name:'gb',label:'حجم (GB) — 0 = نامحدود',type:'number',value:u.gb},{name:'days',label:'انقضا: روز از امروز (خالی = بدون تغییر، 0 = نامحدود)',type:'number'}]);
+      if(!f)return;await api('/users/'+id,'PUT',{gb:num(f.gb),days:num(f.days)})}
+    if(act==='reset'){if(!confirm('ترافیک مصرفی صفر شود؟'))return;await api('/users/'+id+'/reset','POST')}
+    if(act==='toggle')await api('/users/'+id,'PUT',{enabled:!u.enabled});
+    if(act==='del'){if(!confirm('کاربر حذف شود؟'))return;await api('/users/'+id,'DELETE')}
+    start();
+  }catch(err){toast(err.message)}
+};
+async function newUser(){
+  if(!inbounds.length)return toast('اینباندی در دسترس نیست');
+  const f=await form('کاربر جدید',[{name:'name',label:'نام (انگلیسی/عدد)'},{name:'gb',label:'حجم (GB) — 0 = نامحدود',type:'number',value:10},{name:'days',label:'مدت (روز) — 0 = نامحدود',type:'number',value:30},
+    {name:'inbound_id',label:'اینباند',type:'select',options:inbounds.map(i=>({v:i.id,t:`${i.remark||'inbound'} (${i.protocol}:${i.port})`}))}]);
+  if(!f)return;
+  try{await api('/users','POST',{name:f.name,gb:Number(f.gb||0),days:Number(f.days||0),inbound_id:Number(f.inbound_id)});start()}catch(e){toast(e.message)}
+}
+
+async function renderAdmins(){
+  let list;try{list=await api('/admins')}catch(e){return toast(e.message)}
+  window._admins=Object.fromEntries(list.map(a=>[a.id,a]));
+  $('#main').innerHTML='<div class="card"><button id="na">+ ادمین جدید</button></div>'+(list.length?list.map(a=>`
+    <div class="card" data-id="${a.id}" data-kind="admin">
+      <div class="row sp"><b>${esc(a.username)}</b><span class="b ${a.active?'active':'disabled'}">${a.active?'فعال':'غیرفعال/منقضی'}</span></div>
+      <div class="mut">کاربر: ${a.count}${a.max_users?' / '+a.max_users:''} | حجم تخصیص: ${a.allocated.toFixed(1)}${a.max_gb?' / '+a.max_gb:''} GB | مصرف: ${fmtB(a.used)}</div>
+      <div class="mut">انقضا: ${a.expire_ts?new Date(a.expire_ts*1000).toLocaleDateString('fa-IR'):'نامحدود'} | اینباندها: ${a.allowed_inbounds.length?a.allowed_inbounds.join(','):'همه'}</div>
+      <div class="row" style="margin-top:8px"><button class="sm ghost" data-a="edit">ویرایش</button><button class="sm ghost" data-a="users">کاربران</button>
+      <button class="sm ghost" data-a="toggle">${a.enabled?'غیرفعال‌سازی':'فعال‌سازی'}</button><button class="sm bad" data-a="del">حذف</button></div></div>`).join(''):'<div class="card mut">ادمینی وجود ندارد.</div>');
+  $('#na').onclick=newAdmin;
+}
+const inbHint='شناسه اینباندهای مجاز، جدا با کاما (خالی = همه). موجود: '+'';
+function ibList(){return inbounds.map(i=>i.id+'='+(i.remark||i.protocol)).join(' ، ')}
+async function newAdmin(){
+  const f=await form('ادمین جدید',[{name:'username',label:'یوزرنیم'},{name:'password',label:'پسورد',type:'password'},
+    {name:'max_users',label:'سقف تعداد کاربر (0 = نامحدود)',type:'number',value:0},{name:'max_gb',label:'سقف کل حجم GB (0 = نامحدود)',type:'number',value:0},
+    {name:'days',label:'اعتبار حساب (روز، 0 = نامحدود)',type:'number',value:0},{name:'ib',label:'اینباندهای مجاز (خالی = همه) — '+ibList()}]);
+  if(!f)return;
+  try{await api('/admins','POST',{username:f.username,password:f.password,max_users:Number(f.max_users||0),max_gb:Number(f.max_gb||0),days:Number(f.days||0),
+    allowed_inbounds:f.ib.split(',').map(x=>parseInt(x)).filter(x=>!isNaN(x))});renderAdmins()}catch(e){toast(e.message)}
+}
+async function adminAct(act,id){
+  const a=window._admins[id];
+  if(act==='users'){tab='users';const l=await api('/users?admin_id='+id);tab='admin-users';
+    window._users=Object.fromEntries(l.map(u=>[u.id,u]));
+    $('#main').innerHTML='<div class="card"><button class="ghost sm" id="bk">← بازگشت</button> کاربران '+esc(a.username)+'</div>'+(l.length?l.map(u=>`<div class="card" data-id="${u.id}"><div class="row sp"><b>${esc(u.name)}</b><span class="b ${u.status}">${ST[u.status]}</span></div><div class="mut">${fmtB(u.used)} از ${u.gb>0?u.gb+' GB':'نامحدود'} | انقضا: ${fmtD(u.expiry)}</div><div class="row" style="margin-top:8px"><button class="sm bad" data-a="del">حذف</button></div></div>`).join(''):'<div class="card mut">کاربری ندارد.</div>');
+    $('#bk').onclick=()=>{tab='admins';render()};return}
+  if(act==='edit'){
+    const f=await form('ویرایش '+a.username,[{name:'password',label:'پسورد جدید (خالی = بدون تغییر)',type:'password'},
+      {name:'max_users',label:'سقف تعداد کاربر',type:'number',value:a.max_users},{name:'max_gb',label:'سقف کل حجم GB',type:'number',value:a.max_gb},
+      {name:'days',label:'اعتبار: روز از امروز (خالی = بدون تغییر، 0 = نامحدود)',type:'number'},{name:'ib',label:'اینباندهای مجاز — '+ibList(),value:a.allowed_inbounds.join(',')}]);
+    if(!f)return;
+    await api('/admins/'+id,'PUT',{password:f.password||undefined,max_users:num(f.max_users),max_gb:num(f.max_gb),days:num(f.days),
+      allowed_inbounds:f.ib.split(',').map(x=>parseInt(x)).filter(x=>!isNaN(x))});
+  }
+  if(act==='toggle')await api('/admins/'+id,'PUT',{enabled:!a.enabled});
+  if(act==='del'){if(!confirm('ادمین و همه کاربرانش از پنل حذف شوند؟'))return;await api('/admins/'+id,'DELETE')}
+  renderAdmins();
+}
+start();
+</script>
+</body>
+</html>
